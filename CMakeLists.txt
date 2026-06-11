@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets WebSockets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 
 add_executable(RobotControlApp
     main.cpp
@@ -22,5 +22,5 @@ target_include_directories(RobotControlApp PRIVATE
 
 target_link_libraries(RobotControlApp
     Qt6::Widgets
-    Qt6::WebSockets
+    Qt6::Network
 )
