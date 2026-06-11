@@ -11,7 +11,7 @@ A macOS desktop application for real-time control of an Arduino ESP32-based robo
 The interface is designed in a **macOS-style minimalist aesthetic** with smooth animations, translucency, and Apple system fonts.
 
 <img width="792" height="647" alt="Снимок экрана 2026-06-11 в 12 46 34" src="https://github.com/user-attachments/assets/210da359-41e1-4dae-8c6c-cf7b9b76aee2" />
----
+
 
 ## Features
 
@@ -27,7 +27,7 @@ The interface is designed in a **macOS-style minimalist aesthetic** with smooth 
 
 <img width="792" height="647" alt="Снимок экрана 2026-06-11 в 12 46 01" src="https://github.com/user-attachments/assets/1c3273bc-8768-4ca3-a767-a7037d500500" />
 <img width="792" height="647" alt="Снимок экрана 2026-06-11 в 12 45 31" src="https://github.com/user-attachments/assets/bab0c9f9-6009-4dfd-97a5-d299011e1f3f" />
----
+
 
 
 
