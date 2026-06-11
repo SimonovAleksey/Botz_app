@@ -8,8 +8,6 @@ A macOS desktop application for real-time control of an Arduino ESP32-based robo
 
 **Robot Controller App** is a native macOS app built with **Qt6 (C++)** that lets you wirelessly control a differential-drive robot powered by an **ESP32** microcontroller. The app connects to the robot over TCP and sends control commands in real time — no cables, no delays.
 
-The interface is designed in a **macOS-style minimalist aesthetic** with smooth animations, translucency, and Apple system fonts.
-
 <img width="792" height="647" alt="Снимок экрана 2026-06-11 в 12 46 34" src="https://github.com/user-attachments/assets/210da359-41e1-4dae-8c6c-cf7b9b76aee2" />
 
 
