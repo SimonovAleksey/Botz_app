@@ -7,6 +7,9 @@
 #include <QLabel>
 #include <QTimer>
 #include <QKeyEvent>
+#include <QLineEdit>
+#include <QEvent>
+#include "controllers/RobotController.h"
 
 class MainWindow : public QMainWindow
 {
@@ -18,34 +21,48 @@ public:
 protected:
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     QStackedWidget *stack;
-
     QWidget *menuScreen;
     QWidget *tankScreen;
     QWidget *steeringScreen;
 
-    // Tank
     QSlider *leftTrack;
     QSlider *rightTrack;
+    QLabel  *leftValLabel;
+    QLabel  *rightValLabel;
 
-    // Steering
     QSlider *throttle;
     QSlider *steering;
+    QLabel  *throttleValLabel;
+    QLabel  *steerValLabel;
 
-    // Buttons
-    QPushButton *lightBtn;
-    QPushButton *extraBtn;
+    QPushButton *tankLightBtn;
+    QPushButton *tankExtraBtn;
+    QPushButton *steerLightBtn;
+    QPushButton *steerExtraBtn;
 
-    QLabel *lightIndicator;
-    QLabel *extraIndicator;
+    QLabel *tankStatusLabel;
+    QLabel *steerStatusLabel;
+    QLabel *menuStatusLabel;
 
-    QLabel *connectionStatus;
+    QLineEdit   *ipInput;
+    QPushButton *connectBtn;
 
     QTimer *updateTimer;
+    RobotController robot;
 
-    // keyboard state
+    // Which slider is currently mouse-held (timer must not override it)
+    QSlider *heldSlider = nullptr;
+
+    bool lightOn     = false;
+    bool extraOn     = false;
+    bool isConnected = false;
+    bool isListening = false;
+    int  sendTick    = 0;
+
     bool keyW = false, keyS = false;
     bool keyUp = false, keyDown = false;
     bool keyA = false, keyD = false;
@@ -54,5 +71,24 @@ private:
     void setupTankUI();
     void setupSteeringUI();
 
-    void updateIndicator(QLabel *indicator, bool state);
+    void setLightState(bool on);
+    void setExtraState(bool on);
+    void setConnected(bool on);
+    void setListening(bool on);
+    void flashConnectError();
+    void resetConnectError();
+    void flashWindow(const QColor &color, int fadeOutMs = 600);
+    void switchTo(QWidget *target);
+
+    // Wire press/release signals so the timer respects mouse holds
+    void trackSliderHold(QSlider *s);
+
+    static QLabel*      makeValueLabel();
+    static QSlider*     makeVertSlider();
+    static QSlider*     makeHorizSlider();
+    static QPushButton* makeToggleBtn(const QString &text, const QString &key,
+                                       const QString &activeColor = "#34C759");
+    static QWidget*     makeHeader(const QString &title,
+                                    QPushButton *&backBtn,
+                                    QLabel      *&statusOut);
 };
