@@ -7,6 +7,17 @@ RobotController::RobotController(QObject *parent) : QObject(parent)
     connect(&client, &WebSocketClient::connected,       this, &RobotController::connected);
     connect(&client, &WebSocketClient::disconnected,    this, &RobotController::disconnected);
     connect(&client, &WebSocketClient::connectionFailed,this, &RobotController::connectionFailed);
+    connect(&client, &WebSocketClient::messageReceived, this, &RobotController::onMessageReceived);
+}
+
+void RobotController::onMessageReceived(const QString &message)
+{
+    QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8());
+    if (!doc.isObject()) return;
+
+    QJsonObject obj = doc.object();
+    if (obj["type"].toString() == "battery")
+        emit batteryUpdated(obj["voltage"].toDouble(), obj["percent"].toInt());
 }
 
 void RobotController::startServer(quint16 port) { client.startServer(port); }

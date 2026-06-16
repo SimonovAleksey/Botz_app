@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="robot_esp32.ino">robot_esp32/robot_esp32.ino</file>
+    </qresource>
+</RCC>

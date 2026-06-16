@@ -21,6 +21,10 @@ signals:
     void connected();
     void disconnected();
     void connectionFailed();
+    void batteryUpdated(double voltage, int percent);
+
+private slots:
+    void onMessageReceived(const QString &message);
 
 private:
     WebSocketClient client;
