@@ -11,6 +11,8 @@
 #include <QEvent>
 #include "controllers/RobotController.h"
 
+class BatteryGaugeWidget;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -28,6 +30,12 @@ private:
     QWidget *menuScreen;
     QWidget *tankScreen;
     QWidget *steeringScreen;
+    QWidget *programScreen;
+
+    QLineEdit *programSsidInput;
+    QLineEdit *programPassInput;
+    QLineEdit *programIpInput;
+    QLineEdit *programPortInput;
 
     QSlider *leftTrack;
     QSlider *rightTrack;
@@ -48,7 +56,9 @@ private:
     QLabel *steerStatusLabel;
     QLabel *menuStatusLabel;
 
-    QLineEdit   *ipInput;
+    BatteryGaugeWidget *tankBatteryGauge  = nullptr;
+    BatteryGaugeWidget *steerBatteryGauge = nullptr;
+
     QPushButton *connectBtn;
 
     QTimer *updateTimer;
@@ -70,11 +80,15 @@ private:
     void setupMenu();
     void setupTankUI();
     void setupSteeringUI();
+    void setupProgramUI();
+    void generateAndCopySketch();
+    void showToast(const QString &text);
 
     void setLightState(bool on);
     void setExtraState(bool on);
     void setConnected(bool on);
     void setListening(bool on);
+    void setBatteryLevel(double voltage, int percent);
     void flashConnectError();
     void resetConnectError();
     void flashWindow(const QColor &color, int fadeOutMs = 600);

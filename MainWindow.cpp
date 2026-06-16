@@ -11,6 +11,10 @@
 #include <QParallelAnimationGroup>
 #include <QApplication>
 #include <QRegularExpression>
+#include <QFile>
+#include <QTextStream>
+#include <QClipboard>
+#include <QToolTip>
 
 static const char *C_BLUE  = "#0071E3";
 static const char *C_GREEN = "#34C759";
@@ -96,6 +100,117 @@ static QFrame* makeCard()
     return f;
 }
 
+// ── Battery gauge: рисованная иконка + % + схематичный вольтметр ───────────────
+class BatteryGaugeWidget : public QWidget
+{
+public:
+    explicit BatteryGaugeWidget(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        // Высота подогнана так, чтобы отступ сверху (до иконки) и снизу
+        // (после строки вольтметра) внутри виджета совпадали — тогда центрирование
+        // виджета в карточке (Qt::AlignCenter) даёт симметричные отступы и от краёв карточки.
+        setFixedSize(120, 105);
+    }
+
+    void setLevel(double voltage, int percent)
+    {
+        m_voltage = voltage;
+        m_percent = qBound(0, percent, 100);
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+
+        QColor color;
+        if      (m_percent <= 20) color = QColor("#FF3B30");
+        else if (m_percent <= 40) color = QColor("#FF9500");
+        else if (m_percent <= 70) color = QColor("#FFCC00");
+        else                      color = QColor("#34C759");
+
+        const int w = width();
+
+        // Иконка батареи (корпус + ушко-терминал) — центрируем по их суммарной ширине,
+        // чтобы вся фигура была симметрична относительно карточки
+        const int iconW = 58, iconH = 28, iconY = 4, nubW = 4;
+        const int iconTotalW = iconW + nubW;
+        const int iconX = (w - iconTotalW) / 2;
+        QRectF body(iconX, iconY, iconW, iconH);
+
+        p.setPen(QPen(color, 2.2));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(body, 5, 5);
+
+        QRectF nub(iconX + iconW, iconY + iconH * 0.28, nubW, iconH * 0.44);
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawRoundedRect(nub, 1.5, 1.5);
+
+        const double inset = 3.5;
+        QRectF inner(body.x() + inset, body.y() + inset,
+                     body.width() - inset * 2, body.height() - inset * 2);
+        double fillW = inner.width() * (m_percent / 100.0);
+        if (fillW > 0.5) {
+            p.setBrush(color);
+            p.drawRoundedRect(QRectF(inner.x(), inner.y(), fillW, inner.height()), 3, 3);
+        }
+
+        // Процент
+        QFont pf(".AppleSystemUIFont");
+        pf.setPixelSize(22);
+        pf.setBold(true);
+        p.setFont(pf);
+        p.setPen(color);
+        QRect pctRect(0, iconY + iconH + 6, w, 28);
+        p.drawText(pctRect, Qt::AlignCenter, QString::number(m_percent) + "%");
+
+        // Схематичный вольтметр: та же ширина, что у иконки (корпус + ушко),
+        // и та же ось центрирования — для симметрии относительно карточки
+        const int gaugeW = iconTotalW, gaugeH = 5;
+        const int gaugeX = (w - gaugeW) / 2;
+        const int gaugeY = pctRect.bottom() + 8;
+
+        QRectF track(gaugeX, gaugeY, gaugeW, gaugeH);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#E5E5EA"));
+        p.drawRoundedRect(track, 2.5, 2.5);
+
+        double frac = qBound(0.0, (m_voltage - kMinV) / (kMaxV - kMinV), 1.0);
+        if (frac > 0.0) {
+            p.setBrush(color);
+            p.drawRoundedRect(QRectF(track.x(), track.y(), track.width() * frac, track.height()), 2.5, 2.5);
+        }
+
+        QFont vf(".AppleSystemUIFont");
+        vf.setPixelSize(12);
+        vf.setBold(false);
+        p.setFont(vf);
+        p.setPen(QColor("#8E8E93"));
+        QRect vRect(0, gaugeY + gaugeH + 6, w, 16);
+        p.drawText(vRect, Qt::AlignCenter, QString::number(m_voltage, 'f', 1) + " V");
+    }
+
+private:
+    double m_voltage = 0.0;
+    int    m_percent = 0;
+    static constexpr double kMinV = 9.0;   // 3S Li-ion разряжен
+    static constexpr double kMaxV = 12.6;  // 3S Li-ion заряжен
+};
+
+static QFrame* makeBatteryCard(BatteryGaugeWidget *&gaugeOut)
+{
+    QFrame *card = makeCard();
+    card->setFixedSize(140, 152);
+    QVBoxLayout *l = new QVBoxLayout(card);
+    l->setContentsMargins(0, 0, 0, 0);
+    gaugeOut = new BatteryGaugeWidget;
+    l->addWidget(gaugeOut, 0, Qt::AlignCenter);
+    return card;
+}
+
 // ── Accent slider ──────────────────────────────────────────────────────────────
 // No QGraphicsEffect on the slider itself — would break mouse hit-testing.
 // Card shadow mutates on value change to create the glow.
@@ -165,6 +280,18 @@ static void animateButtonGlow(QPushButton *btn, bool on, const QColor &glowColor
     anim->setStartValue(fx->blurRadius());
     anim->setEndValue(on ? 22.0 : 0.0);
     anim->setEasingCurve(on ? QEasingCurve::OutCubic : QEasingCurve::InQuad);
+    if (!on) {
+        // Once faded out, drop the effect entirely instead of leaving a
+        // zero-blur QGraphicsDropShadowEffect attached forever: a lingering
+        // effect on the button clashes with switchTo()'s screen-level
+        // opacity effect and makes the button flash at the wrong spot for a
+        // frame the next time this screen is shown. Deferred via singleShot
+        // so we never delete the effect from inside its own animation's
+        // finished signal.
+        QObject::connect(anim, &QPropertyAnimation::finished, btn, [btn]() {
+            QTimer::singleShot(0, btn, [btn]() { btn->setGraphicsEffect(nullptr); });
+        });
+    }
     anim->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
@@ -328,75 +455,74 @@ QWidget* MainWindow::makeHeader(const QString &title, QPushButton *&backBtn, QLa
 void MainWindow::resetConnectError()
 {
     if (isListening || isConnected) return;
-    connectBtn->setText("Connect");
+    connectBtn->setText("Подключиться");
     connectBtn->setStyleSheet(
         QString("background:%1;border:none;border-radius:8px;"
                 "color:white;font-size:13px;font-weight:600;padding:8px 20px;").arg(C_BLUE)
     );
-    menuStatusLabel->setText("Offline");
+    menuStatusLabel->setText("Не в сети");
     menuStatusLabel->setStyleSheet(
         "font-size:13px;font-weight:500;color:#AEAEB2;background:transparent;border:none;"
     );
-    ipInput->setStyleSheet(QString());
 }
 
 void MainWindow::setListening(bool on)
 {
     isListening = on;
     if (on) {
-        const QString addr = robot.serverAddress();
-        ipInput->setText(addr);
-        ipInput->setReadOnly(true);
-        ipInput->setStyleSheet(
-            "background:#F0F9FF;border:1.5px solid #0071E3;border-radius:8px;"
-            "color:#0071E3;padding:7px 11px;font-size:13px;font-weight:500;"
-        );
-        connectBtn->setText("Stop");
+        connectBtn->setText("Стоп");
         connectBtn->setStyleSheet(
             "background:#636366;border:none;border-radius:8px;"
             "color:white;font-size:13px;font-weight:600;padding:8px 20px;"
         );
-        menuStatusLabel->setText("Waiting for robot...");
+        menuStatusLabel->setText("Ожидание подключения робота...");
         menuStatusLabel->setStyleSheet(
             "font-size:13px;font-weight:500;color:#0071E3;background:transparent;border:none;"
         );
     } else {
-        ipInput->setReadOnly(false);
-        ipInput->clear();
-        ipInput->setStyleSheet(QString());
-        connectBtn->setText("Connect");
+        connectBtn->setText("Подключиться");
         connectBtn->setStyleSheet(
             QString("background:%1;border:none;border-radius:8px;"
                     "color:white;font-size:13px;font-weight:600;padding:8px 20px;").arg(C_BLUE)
         );
-        menuStatusLabel->setText("Offline");
+        menuStatusLabel->setText("Не в сети");
         menuStatusLabel->setStyleSheet(
             "font-size:13px;font-weight:500;color:#AEAEB2;background:transparent;border:none;"
         );
     }
 }
 
+void MainWindow::setBatteryLevel(double voltage, int percent)
+{
+    tankBatteryGauge->setLevel(voltage, percent);
+    steerBatteryGauge->setLevel(voltage, percent);
+}
+
 void MainWindow::setConnected(bool on)
 {
     isConnected = on;
 
-    if (on) flashWindow(QColor(C_GREEN), 500);
+    if (on) {
+        flashWindow(QColor(C_GREEN), 500);
+        showToast("Робот подключён");
+    }
 
     const char *on_ss  = "font-size:12px;font-weight:600;color:#34C759;"
                          "background:transparent;border:none;";
     const char *off_ss = "font-size:12px;font-weight:500;color:#AEAEB2;"
                          "background:transparent;border:none;";
     for (QLabel *l : { tankStatusLabel, steerStatusLabel }) {
-        l->setText(on ? "Online" : "Offline");
+        l->setText(on ? "В сети" : "Не в сети");
         l->setStyleSheet(on ? on_ss : off_ss);
     }
+    if (!on) setBatteryLevel(0.0, 0);
 
     if (on) {
-        menuStatusLabel->setText("Connected");
+        menuStatusLabel->setText("Робот подключён");
         menuStatusLabel->setStyleSheet(
             "font-size:13px;font-weight:600;color:#34C759;background:transparent;border:none;"
         );
-        connectBtn->setText("Disconnect");
+        connectBtn->setText("Отключиться");
         connectBtn->setStyleSheet(
             QString("background:%1;border:none;border-radius:8px;"
                     "color:white;font-size:13px;font-weight:600;padding:8px 20px;").arg(C_RED)
@@ -404,11 +530,11 @@ void MainWindow::setConnected(bool on)
     } else {
         // Robot disconnected but server keeps listening — go back to waiting state
         if (isListening) {
-            menuStatusLabel->setText("Waiting for robot...");
+            menuStatusLabel->setText("Ожидание подключения робота...");
             menuStatusLabel->setStyleSheet(
                 "font-size:13px;font-weight:500;color:#0071E3;background:transparent;border:none;"
             );
-            connectBtn->setText("Stop");
+            connectBtn->setText("Стоп");
             connectBtn->setStyleSheet(
                 "background:#636366;border:none;border-radius:8px;"
                 "color:white;font-size:13px;font-weight:600;padding:8px 20px;"
@@ -427,7 +553,7 @@ void MainWindow::flashConnectError()
 
     flashWindow(QColor(C_RED), 700);
 
-    connectBtn->setText("Failed");
+    connectBtn->setText("Не удалось подключиться");
     connectBtn->setStyleSheet(
         "background:#FF3B30;border:none;border-radius:8px;"
         "color:white;font-size:13px;font-weight:600;padding:8px 20px;"
@@ -435,17 +561,11 @@ void MainWindow::flashConnectError()
     bounceBtn(connectBtn);
     QTimer::singleShot(180, this, [=]() { if (!isConnected) bounceBtn(connectBtn); });
 
-    menuStatusLabel->setText("Server failed to start");
+    menuStatusLabel->setText("Не удалось подключиться");
     menuStatusLabel->setStyleSheet(
         "font-size:13px;font-weight:500;color:#FF3B30;background:transparent;border:none;"
     );
 
-    ipInput->setReadOnly(false);
-    ipInput->clear();
-    ipInput->setStyleSheet(
-        "background:#FFF5F5;border:1.5px solid #FF3B30;border-radius:8px;"
-        "color:#1D1D1F;padding:7px 11px;font-size:13px;"
-    );
     QTimer::singleShot(2500, this, [=]() { if (!isListening) resetConnectError(); });
 }
 
@@ -482,32 +602,46 @@ void MainWindow::setupMenu()
     sub->setAlignment(Qt::AlignCenter);
     sub->setStyleSheet("font-size:13px;color:#8E8E93;");
 
+    // Ширина подогнана так, чтобы совпадать с шириной ряда карточек Tank/Steering
+    // (172 + 16 spacing + 172 = 360) — см. modeRow ниже.
+    const int kModeRowWidth = 172 + 16 + 172;
+
     QFrame *connCard = makeCard();
-    connCard->setMaximumWidth(400);
+    connCard->setFixedWidth(kModeRowWidth);
     QVBoxLayout *ccl = new QVBoxLayout(connCard);
     ccl->setContentsMargins(20,18,20,18); ccl->setSpacing(12);
 
-    QLabel *srvLabel = new QLabel("Controller IP — enter this in ESP32 sketch:");
-    srvLabel->setStyleSheet("font-size:11px;font-weight:600;letter-spacing:0.5px;color:#8E8E93;");
-
-    ipInput = new QLineEdit;
-    ipInput->setPlaceholderText("Press Connect to start server");
-
-    connectBtn = new QPushButton("Connect");
+    connectBtn = new QPushButton("Подключиться");
     connectBtn->setStyleSheet(
         QString("background:%1;border:none;border-radius:8px;"
                 "color:white;font-size:13px;font-weight:600;padding:8px 20px;").arg(C_BLUE)
     );
 
-    menuStatusLabel = new QLabel("Offline");
+    menuStatusLabel = new QLabel("Не в сети");
     menuStatusLabel->setAlignment(Qt::AlignCenter);
     menuStatusLabel->setStyleSheet(
         "font-size:13px;font-weight:500;color:#AEAEB2;background:transparent;border:none;"
     );
 
-    QHBoxLayout *ipRow = new QHBoxLayout;
-    ipRow->setSpacing(8); ipRow->addWidget(ipInput, 1); ipRow->addWidget(connectBtn);
-    ccl->addWidget(srvLabel); ccl->addLayout(ipRow); ccl->addWidget(menuStatusLabel);
+    QFrame *divider = new QFrame;
+    divider->setFixedHeight(1);
+    divider->setStyleSheet("background:#E5E5EA;border:none;");
+
+    QPushButton *programBtn = new QPushButton("Сгенерировать код для Arduino");
+    programBtn->setCursor(Qt::PointingHandCursor);
+    programBtn->setStyleSheet(
+        "background:transparent;border:1px solid #D1D1D6;border-radius:8px;"
+        "color:#1D1D1F;font-size:13px;font-weight:600;padding:8px 18px;"
+    );
+
+    ccl->addWidget(connectBtn); ccl->addWidget(menuStatusLabel);
+    ccl->addWidget(divider);
+    ccl->addWidget(programBtn);
+
+    connect(programBtn, &QPushButton::clicked, [=]() {
+        bounceBtn(programBtn);
+        switchTo(programScreen);
+    });
 
     QHBoxLayout *cardRow = new QHBoxLayout;
     cardRow->addStretch(); cardRow->addWidget(connCard); cardRow->addStretch();
@@ -519,6 +653,7 @@ void MainWindow::setupMenu()
         fl->setContentsMargins(16,12,16,12); fl->setSpacing(4);
         QLabel *tl = new QLabel(lbl);
         tl->setAlignment(Qt::AlignCenter);
+        tl->setWordWrap(true);
         tl->setStyleSheet("font-size:15px;font-weight:600;color:#1D1D1F;");
         QLabel *hl = new QLabel(hint);
         hl->setAlignment(Qt::AlignCenter);
@@ -527,8 +662,8 @@ void MainWindow::setupMenu()
         fl->addWidget(hl); fl->addStretch();
         return f;
     };
-    QFrame *tankCard  = makeModeCard("Tank",     "W / S  ·  ↑ / ↓");
-    QFrame *steerCard = makeModeCard("Steering", "W / S  ·  A / D");
+    QFrame *tankCard  = makeModeCard("Танковое управление",     "W / S  ·  ↑ / ↓");
+    QFrame *steerCard = makeModeCard("Рулевое управление", "W / S  ·  A / D");
 
     QHBoxLayout *modeRow = new QHBoxLayout;
     modeRow->setSpacing(16); modeRow->addStretch();
@@ -557,7 +692,7 @@ void MainWindow::setupMenu()
             isConnected = false;
             setListening(false);
             for (QLabel *l : { tankStatusLabel, steerStatusLabel }) {
-                l->setText("Offline");
+                l->setText("Не в сети");
                 l->setStyleSheet("font-size:12px;font-weight:500;color:#AEAEB2;"
                                  "background:transparent;border:none;");
             }
@@ -579,7 +714,7 @@ void MainWindow::setupTankUI()
     vl->setContentsMargins(0,0,0,0); vl->setSpacing(0);
 
     QPushButton *backBtn = nullptr;
-    QWidget *header = makeHeader("Tank", backBtn, tankStatusLabel);
+    QWidget *header = makeHeader("Танковое управление", backBtn, tankStatusLabel);
     connect(backBtn, &QPushButton::clicked, [=]() { bounceBtn(backBtn); switchTo(menuScreen); });
 
     auto makeTrackCard = [this](const QString &label, QSlider *&so, QLabel *&vo) -> QFrame* {
@@ -602,6 +737,7 @@ void MainWindow::setupTankUI()
 
     QFrame *leftCard  = makeTrackCard("LEFT",  leftTrack,  leftValLabel);
     QFrame *rightCard = makeTrackCard("RIGHT", rightTrack, rightValLabel);
+    QFrame *batteryCard = makeBatteryCard(tankBatteryGauge);
 
     tankLightBtn = makeToggleBtn("Light", "L", C_GREEN);
     tankExtraBtn = makeToggleBtn("Extra", "E", C_RED);
@@ -610,7 +746,7 @@ void MainWindow::setupTankUI()
     btnRow->setSpacing(10); btnRow->addStretch();
     btnRow->addWidget(tankLightBtn); btnRow->addWidget(tankExtraBtn); btnRow->addStretch();
 
-    QLabel *hint = new QLabel("W / S  —  Left track          ↑ / ↓  —  Right track");
+    QLabel *hint = new QLabel("W / S  —  Левая гусеница          ↑ / ↓  —  Правая гусеница");
     hint->setAlignment(Qt::AlignCenter);
     hint->setStyleSheet("font-size:11px;color:#C7C7CC;");
 
@@ -620,7 +756,8 @@ void MainWindow::setupTankUI()
 
     QHBoxLayout *tracksRow = new QHBoxLayout;
     tracksRow->addStretch(1); tracksRow->addWidget(leftCard);
-    tracksRow->addStretch(3); tracksRow->addWidget(rightCard); tracksRow->addStretch(1);
+    tracksRow->addStretch(1); tracksRow->addWidget(batteryCard, 0, Qt::AlignVCenter);
+    tracksRow->addStretch(1); tracksRow->addWidget(rightCard); tracksRow->addStretch(1);
 
     cv->addLayout(tracksRow, 1);
     cv->addSpacing(22);
@@ -644,7 +781,7 @@ void MainWindow::setupSteeringUI()
     vl->setContentsMargins(0,0,0,0); vl->setSpacing(0);
 
     QPushButton *backBtn = nullptr;
-    QWidget *header = makeHeader("Steering", backBtn, steerStatusLabel);
+    QWidget *header = makeHeader("Рулевое управление", backBtn, steerStatusLabel);
     connect(backBtn, &QPushButton::clicked, [=]() { bounceBtn(backBtn); switchTo(menuScreen); });
 
     // Throttle (left, vertical, green)
@@ -677,7 +814,7 @@ void MainWindow::setupSteeringUI()
     btnRow->setSpacing(10); btnRow->addStretch();
     btnRow->addWidget(steerLightBtn); btnRow->addWidget(steerExtraBtn); btnRow->addStretch();
 
-    QLabel *hint = new QLabel("W / S  —  Throttle          A / D  —  Steering");
+    QLabel *hint = new QLabel("W / S  —  Движение          A / D  —  Рулевое управление");
     hint->setAlignment(Qt::AlignCenter);
     hint->setStyleSheet("font-size:11px;color:#C7C7CC;");
 
@@ -685,8 +822,12 @@ void MainWindow::setupSteeringUI()
     QWidget *rightPanel = new QWidget; rightPanel->setObjectName("root");
     QVBoxLayout *rpl = new QVBoxLayout(rightPanel);
     rpl->setContentsMargins(0,0,0,0); rpl->setSpacing(0);
+    QFrame *batteryCard = makeBatteryCard(steerBatteryGauge);
+
     rpl->addSpacing(16);
     rpl->addLayout(btnRow);
+    rpl->addStretch(1);
+    rpl->addWidget(batteryCard, 0, Qt::AlignHCenter);
     rpl->addStretch(1);          // pushes slider toward bottom
     rpl->addWidget(steerCard);
     rpl->addSpacing(8);
@@ -707,14 +848,217 @@ void MainWindow::setupSteeringUI()
     connect(steerExtraBtn, &QPushButton::toggled, this, &MainWindow::setExtraState);
 }
 
+// ── PROGRAM BOARD ──────────────────────────────────────────────────────────────
+void MainWindow::setupProgramUI()
+{
+    programScreen = new QWidget;
+    programScreen->setObjectName("root");
+    QVBoxLayout *vl = new QVBoxLayout(programScreen);
+    vl->setContentsMargins(0,0,0,0); vl->setSpacing(0);
+
+    QPushButton *backBtn = nullptr;
+    QLabel *dummyStatus  = nullptr;
+    QWidget *header = makeHeader("Program Board", backBtn, dummyStatus);
+    // Не hide() — скрытый виджет выпадает из расчёта layout, и заголовок
+    // съезжает влево (backBtn слева не уравновешен ничем справа).
+    // Делаем невидимым, но с шириной, которая компенсирует backBtn,
+    // чтобы заголовок остался по центру, как на остальных экранах.
+    dummyStatus->setText(QString());
+    dummyStatus->setFixedWidth(32);
+    dummyStatus->setStyleSheet("background:transparent;border:none;");
+    connect(backBtn, &QPushButton::clicked, [=]() { bounceBtn(backBtn); switchTo(menuScreen); });
+
+    QFrame *card = makeCard();
+    card->setFixedWidth(340);
+    QVBoxLayout *cl = new QVBoxLayout(card);
+    cl->setContentsMargins(20,18,20,18); cl->setSpacing(12);
+
+    QLabel *hint = new QLabel(
+        "Введи имя Wi-Fi сети и пароль, которые будет использовать плата.\n"
+        "Скрипт сгенерируется и сразу скопируется в буфер обмена — "
+        "вставь его в Arduino IDE и загрузи на ESP32.");
+    hint->setWordWrap(true);
+    hint->setStyleSheet("font-size:12px;color:#8E8E93;");
+
+    QLabel *ssidLabel = new QLabel("Имя Wi-Fi сети (SSID)");
+    ssidLabel->setStyleSheet("font-size:11px;font-weight:600;letter-spacing:0.5px;color:#8E8E93;");
+    programSsidInput = new QLineEdit;
+    programSsidInput->setPlaceholderText("WiFi");
+
+    QLabel *passLabel = new QLabel("Пароль");
+    passLabel->setStyleSheet("font-size:11px;font-weight:600;letter-spacing:0.5px;color:#8E8E93;");
+    programPassInput = new QLineEdit;
+    programPassInput->setPlaceholderText("Password");
+
+    QLabel *ipLabel = new QLabel("IP Вашего компьютера");
+    ipLabel->setStyleSheet("font-size:11px;font-weight:600;letter-spacing:0.5px;color:#8E8E93;");
+
+    QPushButton *ipHelpBtn = new QPushButton("?");
+    ipHelpBtn->setCursor(Qt::PointingHandCursor);
+    ipHelpBtn->setFixedSize(18, 18);
+    ipHelpBtn->setStyleSheet(
+        "QPushButton { background:#E5E5EA;border:none;border-radius:9px;"
+        "  color:#636366;font-size:11px;font-weight:700;padding:0; }"
+        "QPushButton:hover   { background:#D1D1D6; }"
+        "QPushButton:pressed { background:#C7C7CC; }"
+    );
+    connect(ipHelpBtn, &QPushButton::clicked, [=]() {
+        QToolTip::showText(
+            ipHelpBtn->mapToGlobal(QPoint(ipHelpBtn->width() + 6, 0)),
+            "Как узнать IP компьютера в локальной сети:\n\n"
+            "macOS: меню  → Системные настройки → Wi-Fi →\n"
+            "значок (i) рядом с активной сетью → IP-адрес.\n\n"
+            "Либо в Терминале:\n"
+            "ipconfig getifaddr en0\n\n"
+            "Windows: Параметры → Сеть и Интернет → Wi-Fi →\n"
+            "выбранная сеть → Свойства → IPv4-адрес.\n\n"
+            "Либо в командной строке:\n"
+            "ipconfig",
+            ipHelpBtn, QRect(), 8000
+        );
+    });
+
+    QHBoxLayout *ipLabelRow = new QHBoxLayout;
+    ipLabelRow->setSpacing(6); ipLabelRow->setContentsMargins(0,0,0,0);
+    ipLabelRow->addWidget(ipLabel); ipLabelRow->addWidget(ipHelpBtn); ipLabelRow->addStretch();
+
+    programIpInput = new QLineEdit;
+    programIpInput->setPlaceholderText("888.88.88.8");
+
+    QLabel *portLabel = new QLabel("Порт");
+    portLabel->setStyleSheet("font-size:11px;font-weight:600;letter-spacing:0.5px;color:#8E8E93;");
+    programPortInput = new QLineEdit("8080");
+    programPortInput->setPlaceholderText("8080");
+
+    QPushButton *genBtn = new QPushButton("Сгенерировать и скопировать скрипт");
+    genBtn->setCursor(Qt::PointingHandCursor);
+    genBtn->setStyleSheet(
+        QString("background:%1;border:none;border-radius:8px;"
+                "color:white;font-size:13px;font-weight:600;padding:10px 16px;").arg(C_BLUE)
+    );
+
+    cl->addWidget(hint);
+    cl->addWidget(ssidLabel); cl->addWidget(programSsidInput);
+    cl->addWidget(passLabel); cl->addWidget(programPassInput);
+    cl->addLayout(ipLabelRow); cl->addWidget(programIpInput);
+    cl->addWidget(portLabel); cl->addWidget(programPortInput);
+    cl->addSpacing(4);
+    cl->addWidget(genBtn);
+
+    QHBoxLayout *cardRow = new QHBoxLayout;
+    cardRow->addStretch(); cardRow->addWidget(card); cardRow->addStretch();
+
+    QVBoxLayout *content = new QVBoxLayout;
+    content->addStretch(2); content->addLayout(cardRow); content->addStretch(3);
+
+    vl->addWidget(header); vl->addLayout(content, 1);
+    stack->addWidget(programScreen);
+
+    connect(genBtn, &QPushButton::clicked, [=]() { bounceBtn(genBtn); generateAndCopySketch(); });
+}
+
+void MainWindow::generateAndCopySketch()
+{
+    const QString ssid = programSsidInput->text().trimmed();
+    const QString pass = programPassInput->text();
+    if (ssid.isEmpty()) {
+        programSsidInput->setFocus();
+        return;
+    }
+
+    QFile file(":/robot_esp32.ino");
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        showToast("Не удалось прочитать шаблон скетча");
+        return;
+    }
+    QString sketch = QTextStream(&file).readAll();
+
+    // Escape so the values stay valid inside a C string literal
+    auto escape = [](QString s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    };
+
+    sketch.replace(QRegularExpression(R"(SSID\s*=\s*".*?";)"),
+                    QString("SSID            = \"%1\";").arg(escape(ssid)));
+    sketch.replace(QRegularExpression(R"(PASSWORD\s*=\s*".*?";)"),
+                    QString("PASSWORD        = \"%1\";").arg(escape(pass)));
+
+    const QString ip = programIpInput->text().trimmed();
+    if (!ip.isEmpty()) {
+        sketch.replace(QRegularExpression(R"(CONTROLLER_IP\s*=\s*".*?";)"),
+                        QString("CONTROLLER_IP   = \"%1\";").arg(escape(ip)));
+    }
+
+    bool portOk = false;
+    const int port = programPortInput->text().trimmed().toInt(&portOk);
+    if (portOk && port > 0 && port <= 65535) {
+        sketch.replace(QRegularExpression(R"(CONTROLLER_PORT\s*=\s*\d+;)"),
+                        QString("CONTROLLER_PORT = %1;").arg(port));
+    }
+
+    QGuiApplication::clipboard()->setText(sketch);
+    showToast("Скетч скопирован в буфер обмена");
+}
+
+// ── Toast: полупрозрачное уведомление с анимацией fade-in/hold/fade-out ────────
+void MainWindow::showToast(const QString &text)
+{
+    auto *toast = new QLabel(text, this);
+    toast->setAlignment(Qt::AlignCenter);
+    toast->setWordWrap(true);
+    toast->setStyleSheet(
+        "background:rgba(29,29,31,0.80); color:white; font-size:12px; font-weight:600;"
+        "border-radius:10px; padding:10px 16px;"
+    );
+    toast->setAttribute(Qt::WA_TransparentForMouseEvents);
+
+    const QRect area = centralWidget()->geometry();
+    const int margin = 24;
+    toast->setFixedWidth(qMin(360, area.width() - margin * 2));
+    toast->adjustSize();
+    toast->move(area.x() + (area.width() - toast->width()) / 2,
+                area.y() + area.height() - toast->height() - margin);
+    toast->raise();
+    toast->show();
+
+    auto *effect = new QGraphicsOpacityEffect(toast);
+    toast->setGraphicsEffect(effect);
+    effect->setOpacity(0);
+
+    auto *seq = new QSequentialAnimationGroup(toast);
+
+    auto *in = new QPropertyAnimation(effect, "opacity");
+    in->setDuration(160);
+    in->setStartValue(0.0); in->setEndValue(1.0);
+    in->setEasingCurve(QEasingCurve::OutQuad);
+
+    auto *hold = new QPropertyAnimation(effect, "opacity");
+    hold->setDuration(1600);
+    hold->setStartValue(1.0); hold->setEndValue(1.0);
+
+    auto *out = new QPropertyAnimation(effect, "opacity");
+    out->setDuration(350);
+    out->setStartValue(1.0); out->setEndValue(0.0);
+    out->setEasingCurve(QEasingCurve::OutCubic);
+
+    seq->addAnimation(in);
+    seq->addAnimation(hold);
+    seq->addAnimation(out);
+    connect(seq, &QSequentialAnimationGroup::finished, toast, &QLabel::deleteLater);
+    seq->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
 // ── CONSTRUCTOR ────────────────────────────────────────────────────────────────
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setWindowTitle("Robot Controller");
     setWindowIcon(QIcon(makeRcPixmap(64)));
-    resize(820, 560);
-    setMinimumSize(680, 460);
+    resize(820, 620);
+    // High enough that the tank screen's track cards (label + 200px slider +
+    // value readout, stacked) never get squeezed below their natural height —
+    // otherwise the value label overlaps the slider instead of sitting under it.
+    setMinimumSize(680, 600);
     setStyleSheet(GLOBAL_SS);
 
     stack = new QStackedWidget(this);
@@ -723,6 +1067,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupMenu();
     setupTankUI();
     setupSteeringUI();
+    setupProgramUI();
 
     stack->setCurrentWidget(menuScreen);
     qApp->installEventFilter(this);
@@ -730,6 +1075,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(&robot, &RobotController::connected,        [=]() { setConnected(true);  });
     connect(&robot, &RobotController::disconnected,     [=]() { isConnected = false; setConnected(false); });
     connect(&robot, &RobotController::connectionFailed, [=]() { flashConnectError(); });
+    connect(&robot, &RobotController::batteryUpdated,
+            [=](double voltage, int percent) { setBatteryLevel(voltage, percent); });
 
     updateTimer = new QTimer(this);
     connect(updateTimer, &QTimer::timeout, [=]() {

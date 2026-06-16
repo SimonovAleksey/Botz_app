@@ -1,98 +1,100 @@
 #include "WebSocketClient.h"
 #include <QDebug>
 
-WebSocketClient::WebSocketClient(QObject *parent) : QObject(parent)
+WebSocketClient::WebSocketClient(QObject *parent)
+    : QObject(parent)
+    , wsServer("RobotController", QWebSocketServer::NonSecureMode, this)
 {
-    connect(&tcpServer, &QTcpServer::newConnection, this, &WebSocketClient::onNewConnection);
+    connect(&wsServer, &QWebSocketServer::newConnection,
+            this, &WebSocketClient::onNewConnection);
+}
+
+WebSocketClient::~WebSocketClient()
+{
+    stopServer();
 }
 
 void WebSocketClient::startServer(quint16 port)
 {
     if (clientSocket) {
-        clientSocket->disconnect();
+        clientSocket->close();
         clientSocket->deleteLater();
         clientSocket = nullptr;
     }
-    tcpServer.close();
+    wsServer.close();
 
-    if (!tcpServer.listen(QHostAddress::AnyIPv4, port)) {
-        qDebug() << "[Server] listen failed:" << tcpServer.errorString();
+    if (!wsServer.listen(QHostAddress::AnyIPv4, port)) {
+        qDebug() << "[WS] listen failed:" << wsServer.errorString();
         emit connectionFailed();
         return;
     }
-    qDebug() << "[Server] listening on" << listenAddress();
+    qDebug() << "[WS] listening on" << listenAddress();
 }
 
 void WebSocketClient::stopServer()
 {
     if (clientSocket) {
-        clientSocket->disconnect();
+        clientSocket->close();
         clientSocket->deleteLater();
         clientSocket = nullptr;
     }
-    tcpServer.close();
-    readBuffer.clear();
+    wsServer.close();
 }
 
 QString WebSocketClient::listenAddress() const
 {
-    if (!tcpServer.isListening()) return {};
-    QHostAddress addr = findWifiAddress();
+    if (!wsServer.isListening()) return {};
+    QHostAddress addr = findWifiAddressHost();
     QString ip = addr.isNull() ? QString("0.0.0.0") : addr.toString();
-    return ip + ":" + QString::number(tcpServer.serverPort());
+    return ip + ":" + QString::number(wsServer.serverPort());
 }
 
 void WebSocketClient::sendMessage(const QString &message)
 {
     if (clientSocket && clientSocket->state() == QAbstractSocket::ConnectedState)
-        clientSocket->write((message + "\n").toUtf8());
+        clientSocket->sendTextMessage(message);
 }
 
 void WebSocketClient::onNewConnection()
 {
-    QTcpSocket *pending = tcpServer.nextPendingConnection();
+    QWebSocket *pending = wsServer.nextPendingConnection();
     if (!pending) return;
 
+    // Accept only one robot at a time
     if (clientSocket && clientSocket->state() == QAbstractSocket::ConnectedState) {
-        pending->disconnectFromHost();
+        pending->close();
         pending->deleteLater();
         return;
     }
     if (clientSocket) clientSocket->deleteLater();
     clientSocket = pending;
-    readBuffer.clear();
 
-    connect(clientSocket, &QTcpSocket::disconnected, this, &WebSocketClient::onClientDisconnected);
-    connect(clientSocket, &QTcpSocket::readyRead,    this, &WebSocketClient::onReadyRead);
+    connect(clientSocket, &QWebSocket::disconnected,
+            this, &WebSocketClient::onClientDisconnected);
+    connect(clientSocket, &QWebSocket::textMessageReceived,
+            this, &WebSocketClient::messageReceived);
 
-    qDebug() << "[Server] robot connected from" << clientSocket->peerAddress().toString();
+    qDebug() << "[WS] robot connected from" << clientSocket->peerAddress().toString();
     emit connected();
 }
 
 void WebSocketClient::onClientDisconnected()
 {
-    qDebug() << "[Server] robot disconnected";
+    qDebug() << "[WS] robot disconnected";
     if (clientSocket) {
         clientSocket->deleteLater();
         clientSocket = nullptr;
     }
-    readBuffer.clear();
     emit disconnected();
 }
 
-void WebSocketClient::onReadyRead()
+QString WebSocketClient::detectLocalIp()
 {
-    readBuffer += QString::fromUtf8(clientSocket->readAll());
-    while (readBuffer.contains('\n')) {
-        int idx = readBuffer.indexOf('\n');
-        QString line = readBuffer.left(idx).trimmed();
-        readBuffer   = readBuffer.mid(idx + 1);
-        if (!line.isEmpty())
-            emit messageReceived(line);
-    }
+    QHostAddress addr = findWifiAddressHost();
+    return addr.isNull() ? QString() : addr.toString();
 }
 
-QHostAddress WebSocketClient::findWifiAddress()
+QHostAddress WebSocketClient::findWifiAddressHost()
 {
     for (const QNetworkInterface &iface : QNetworkInterface::allInterfaces()) {
         if (!(iface.flags() & QNetworkInterface::IsUp))      continue;
@@ -101,8 +103,8 @@ QHostAddress WebSocketClient::findWifiAddress()
         if (name.startsWith("utun") || name.startsWith("tun") || name.startsWith("ppp")) continue;
         for (const QNetworkAddressEntry &entry : iface.addressEntries()) {
             if (entry.ip().protocol() != QAbstractSocket::IPv4Protocol) continue;
-            quint32 ip     = entry.ip().toIPv4Address();
-            quint32 first  = ip >> 24;
+            quint32 ip    = entry.ip().toIPv4Address();
+            quint32 first = ip >> 24;
             quint32 second = (ip >> 16) & 0xFF;
             if (first == 10 || first == 192 || (first == 172 && second >= 16 && second <= 31))
                 return entry.ip();
