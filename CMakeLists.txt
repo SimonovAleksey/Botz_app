@@ -10,6 +10,14 @@ set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebSockets)
 
+set(MACOSX_BUNDLE_ICON_FILE AppIcon.icns)
+set(APP_ICON ${CMAKE_SOURCE_DIR}/AppIcon.icns)
+set_source_files_properties(${APP_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+
+if(WIN32)
+    set(WIN_RC ${CMAKE_SOURCE_DIR}/app.rc)
+endif()
+
 add_executable(RobotControlApp
     MACOSX_BUNDLE
     main.cpp
@@ -17,6 +25,8 @@ add_executable(RobotControlApp
     network/WebSocketClient.cpp
     controllers/RobotController.cpp
     resources.qrc
+    ${APP_ICON}
+    ${WIN_RC}
 )
 
 set_target_properties(RobotControlApp PROPERTIES
@@ -24,6 +34,7 @@ set_target_properties(RobotControlApp PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.robotcontrolapp.app"
     MACOSX_BUNDLE_BUNDLE_VERSION "1.0"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+    MACOSX_BUNDLE_ICON_FILE AppIcon.icns
 )
 
 target_include_directories(RobotControlApp PRIVATE
